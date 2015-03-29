@@ -1,87 +1,33 @@
 #!/usr/bin/env ruby
 
-class Array
-  def random
-    self[rand(size - 1)]
-  end
-end
-
-class Pool
-  def initialize(count)
-    @count, @queue = count, Queue.new
-  end
-
-  def enqueue(&block)
-    @queue.push(block)
-  end
-
-  def collect
-    count   = 0
-    results = []
-
-    @count.times.map do
-      Thread.new do
-        begin
-          while work = @queue.pop(true)
-            results.push(work.call(count += 1))
-          end
-        rescue ThreadError
-        end
-      end
-    end.map(&:join)
-
-    results
-  end
-end
-
-class Fork
-  def initialize(count)
-    @pool = Pool.new(count)
-  end
-
-  def enqueue(&block)
-    @pool.enqueue do |count|
-      pr, pw = IO.pipe
-      pid    = fork do
-        # Child
-        pr.close
-        pw.write(Marshal.dump(block.call(count)))
-        pw.close
-      end
-
-      # Parent
-      pw.close
-      result = Marshal.load(pr.read)
-      pr.close
-
-      Process.wait(pid)
-      result
-    end
-  end
-
-  def collect
-    @pool.collect
-  end
-end
+require "set"
+require_relative "pool"
+require_relative "patch"
 
 class Forest
 
-  def self.sample(repeat, fraction, observations)
+  def self.bootstrap(repeat, observations, fraction = 1.00)
     size = fraction * observations.length
 
     repeat.times.each do
-      yield size.to_i.times.map { observations.random }
+      yield size.to_i.times.map { observations.relement }
     end
   end
 
   def self.cart(measure, label, observations)
-    pool = Fork.new(4)
+    pool = ForkPool.new(8)
+    all  = observations.inject(Set.new){|s,o| s.merge(o.keys) }
+    all -= [label]
 
-    sample(250, 0.50, observations) do |subset|
+    bootstrap(250, observations) do |samples|
       pool.enqueue do |n|
         $stderr.puts "Starting #{n}"
-        tree = Tree.cart(measure, label, subset, 5)
-        tree.prune(measure, tree.score * 0.01)
+
+        # Select a random subset of features
+        attrs  = all.rsubset(1 + rand(all.size)) | [label]
+        subset = samples.map{|o| o.slice(attrs) }
+
+        Tree.cart(measure, label, subset, -1)
       end
     end
 
