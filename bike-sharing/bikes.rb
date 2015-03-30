@@ -2,9 +2,9 @@
 
 require "pp"
 require "time"
-require_relative "tree"
-require_relative "forest"
+require_relative "cart"
 require_relative "patch"
+require_relative "bagging"
 
 def csv(io)
   names = nil
@@ -19,117 +19,140 @@ def csv(io)
 end
 
 def time_features(time)
+  # Note day of month is NOT included as a feature, because we know the
+  # training set doesn't include instances of 20-31 and a decision tree
+  # won't correctly generalize without those instances.
+
   return {
     mon_a:          %w(_ jan feb mar apr may jun jul aug sep oct nov dec)[time.month],
-    mon_n:          time.month,
-    mon_hod_a:      "#{time.month}-#{time.hour}",
-    mon_hod_n:      time.month * 100 + time.hour,
-    mon_dow_a:      "#{time.month}-#{time.wday}",
-    mon_dow_n:      time.month * 100 + time.wday,
-    dow_a:          %w(sun mon tue wed thu fri sat)[time.wday],
-    dow_n:          time.wday,
-    dow_hod_a:      "#{time.wday}-#{time.hour}",
-    dow_hod_n:      time.wday * 100 + time.hour,
-    hod_a:          time.hour.to_s,
-    hod_n:          time.hour,
-    year_a:         time.year.to_s,
-    year_n:         time.year,
-    year_mon:       "#{time.year}-#{time.month}",
-    year_dow:       "#{time.year}-#{time.wday}",
-    year_hod:       "#{time.year}-#{time.hour}",
-    year_mon_hod_a: "#{time.year}-#{time.month}-#{time.hour}",
-    year_mon_dow_a: "#{time.year}-#{time.month}-#{time.wday}" }
+    mon_n:          time.month,                                   # 12
+    mon_hod_a:      [time.month, time.hour].join("-"),            # 288 = 12 * 24
+  # mon_hod_n:      time.month * 100 + time.hour,                 # 288 = 12 * 24
+    mon_dow_a:      [time.month, time.wday].join("-"),            # 84 = 12 * 7
+  # mon_dow_n:      time.month * 100 + time.wday,                 # 84 = 12 * 7
+    dow_a:          %w(sun mon tue wed thu fri sat)[time.wday],   # 7
+  # dow_n:          time.wday,                                    # 7
+    dow_hod_a:      [time.wday, time.hour].join("-"),             # 168 = 24 * 7
+  # dow_hod_n:      time.wday * 100 + time.hour,                  # 168 = 24 * 7
+    hod_a:          time.hour.to_s,                               # 24
+    hod_n:          time.hour,                                    # 24
+    year_a:         time.year.to_s,                               # 2
+    year_n:         time.year,                                    # 2
+    year_mon:       [time.year, time.month].join("-"),            # 24 = 2 * 12
+    year_dow:       [time.year, time.wday].join("-"),             # 14 = 2 * 14
+    year_hod:       [time.year, time.hour].join("-"),             # 48 = 2 * 24
+  # year_mon_hod_a: [time.year, time.month, time.hour].join("-"), # 576 = 2 * 12 * 24
+    year_mon_dow_a: [time.year, time.month, time.wday].join("-")  # 168 = 2 * 12 * 7
+  }
 end
 
 def features(x)
   time = Time.parse(x["datetime"])
 
   return time_features(time).update \
-    workday:      x["workingday"] != "0",
-    season:       %w(_ spring summer autumn winter)[x["season"].to_i],
-    holiday:      x["holiday"] != "0",
-    weather:      %w(_ clear mist light heavy)[x["weather"].to_i],
-    temperature:  x["temp"].to_f,
-    feels_like:   x["atemp"].to_f,
-    humidity:     x["humidity"].to_f,
-    wind:         x["windspeed"].to_f,
-    unregistered: x["casual"].to_i,
-    registered:   x["registered"].to_i,
-    total:        x["count"].to_i
+    workday:      x["workingday"] != "0",                              # 2
+    season:       %w(_ spring summer autumn winter)[x["season"].to_i], # 4 -- this is equivalent to (mon / 4 + 1)
+    holiday:      x["holiday"] != "0",                                 # 2
+    weather:      %w(_ clear mist light heavy)[x["weather"].to_i],     # 4
+    temperature:  x["temp"].to_i,                                      # continuous
+    feels_like:   x["atemp"].to_i,                                     # continuous
+    humidity:     x["humidity"].to_i,                                  # continuous
+    wind:         x["windspeed"].to_i,                                 # continuous
+
+    unregistered: x["casual"].to_i,                                    # label
+    registered:   x["registered"].to_i,                                # label
+    total:        x["count"].to_i                                      # label
 end
 
 def features__(x)
   time = Time.parse("#{x["dteday"]} #{x["hr"]}:00:00")
 
   return time_features(time).update \
+    dom_n:        time.day,
     workday:      x["workingday"] != "0",
     season:       %w(_ spring summer autumn winter)[x["season"].to_i],
     holiday:      x["holiday"] != "0",
     weather:      %w(_ clear mist light heavy)[x["weathersit"].to_i],
-    temperature:  x["temp"].to_f,
-    feels_like:   x["atemp"].to_f,
-    humidity:     x["hum"].to_f,
-    wind:         x["windspeed"].to_f,
+    temperature:  x["temp"].to_i,
+    feels_like:   x["atemp"].to_i,
+    humidity:     x["hum"].to_i,
+    wind:         x["windspeed"].to_i,
+
     unregistered: x["casual"].to_i,
     registered:   x["registered"].to_i,
     total:        x["cnt"].to_i
 end
 
-def error(p, a)
-  (Math.log(1 + p.to_i) - Math.log(1 + a.to_i)) ** 2
+# Train two random forest models (or read them from disk)
+def train(observations)
+  registered =
+    begin
+      Marshal.load(File.read("registered.t"))
+    rescue
+      $stderr.puts "Training model for 'registered'"
+
+      Bagging.bootstrap(150, 15, :registered, observations) do |sample|
+        CART.regression(:registered, sample.map{|x| x.except([:unregistered, :total]) })
+      end.tap do |forest|
+        File.open("registered.t", "w"){|io| io.write(Marshal.dump(forest)) }
+      end
+    end
+
+  unregistered =
+    begin
+      Marshal.load(File.read("unregistered.t"))
+    rescue
+      $stderr.puts "Training model for 'unregistered'"
+
+      Bagging.bootstrap(150, 15, :unregistered, observations) do |sample|
+        CART.regression(:unregistered, sample.map{|x| x.except([:registered, :total]) })
+      end.tap do |forest|
+        File.open("unregistered.t", "w"){|io| io.write(Marshal.dump(forest)) }
+      end
+    end
+
+  [registered, unregistered]
 end
 
-training = []
+# Make predictions (on test data set)
+def predict(registered, unregistered, io)
+  $stdout.puts "datetime,count"
 
-csv(STDIN.tty? ? File.open(ARGV[0]) : STDIN){|x| training << features(x) }
-
-begin
-  reg_tree = Marshal.load(File.read("reg.t"))
-rescue
-  reg_tree = Forest.cart(:variance, :registered, training.map{|x| x.except([:unregistered, :total]) })
-  File.open("reg.t", "w"){|io| io.write(Marshal.dump(reg_tree)) }
-end
-
-begin
-  unr_tree = Marshal.load(File.read("unr.t"))
-rescue
-  unr_tree = Forest.cart(:variance, :unregistered, training.map{|x| x.except([:registered, :total]) })
-  File.open("unr.t", "w"){|io| io.write(Marshal.dump(unr_tree)) }
-end
-
-# begin
-#   all_tree = Marshal.load(File.read("all.t"))
-# rescue
-#   all_tree = Forest.cart(:variance, :total, training.map{|x| x.except([:registered, :unregistered]) })
-#   File.open("all.t", "w"){|io| io.write(Marshal.dump(all_tree)) }
-# end
-
-File.open("data/test.csv") do |io|
   csv(io) do |x|
     y = features(x)
-    puts "%s,%d" % [x["datetime"], unr_tree.decide(y) + reg_tree.decide(y)]
+    puts "%s,%d" % [x["datetime"], registered.predict(y, :mean) + unregistered.predict(y, :mean)]
   end
 end
 
-# File.open("data/hour.csv") do |io|
-#   count        = 0.0
-# 
-#   sum_sep_tree = 0
-#   #um_all_tree = 0
-# 
-#   csv(io) do |x|
-#     y = features__(x)
-#     next if y[:dom_n] <= 19
-# 
-#     count += 1
-# 
-#     sum_sep_tree += error(y[:total], unr_tree.decide(y) + reg_tree.decide(y))
-#     #um_all_tree += error(y[:total], all_tree.decide(y))
-#   end
-# 
-#   #uts "count: #{count}"
-#   #uts
-#   puts "sep_tree:  #{Math.sqrt(sum_sep_tree / count)}"
-#   #uts "all_tree:  #{Math.sqrt(sum_all_tree / count)}"
-#   puts
-# end
+# Compute the error of a single prediction
+def error(actual, predicted)
+  (Math.log(1 + predicted.to_i) - Math.log(1 + actual.to_i)) ** 2
+end
+
+# Evaluate error (using whole data set)
+def evaluate(registered, unregistered, io)
+  count = 0.0
+  total = 0
+  
+  csv(io) do |x|
+    y = features__(x)
+
+    # Ignore data from training set
+    next if y[:dom_n] <= 19
+  
+    count += 1
+    total += error(y[:total], registered.predict(y, :mean) + unregistered.predict(y, :mean))
+  end
+  
+  $stderr.puts "error:  #{Math.sqrt(total / count)}"
+end
+
+if __FILE__ == $0
+  observations = []
+  csv(STDIN.tty? ? File.open(ARGV[0]) : STDIN){|x| observations << features(x) }
+
+  registered, unregistered = train(observations)
+
+  File.open("data/test.csv"){|io| predict(registered, unregistered, io)  }
+  File.open("data/hour.csv"){|io| evaluate(registered, unregistered, io) }
+end

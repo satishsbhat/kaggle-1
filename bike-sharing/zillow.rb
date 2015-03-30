@@ -33,7 +33,7 @@ def download(city_or_zip, addresses)
 end
 
 if __FILE__ == $0
-  require_relative "tree"
+  require_relative "cart"
 
   # city_or_zip = ARGV[0]
   # addresses   = STDIN.each_line.map(&:strip)
@@ -45,12 +45,7 @@ if __FILE__ == $0
   # end
 
   training = File.open("training.bin"){|io| Marshal.load(io) }
-
-  tree     = Tree.cart(:variance, :price, training)
-  variance = tree.score
+  tree     = CART.regression(:price, training)
 
   pp tree
-  pp
-  pp
-  pp tree.prune(:variance, variance * 0.01)
 end
