@@ -21,23 +21,16 @@ class Bagging
   #     CART.train(:variance, :count, sample)
   #   end
   #
-  def self.bootstrap(count, width, label, observations)
+  def self.bootstrap(count, label, observations)
     # Build models in parallel
     pool = ForkPool.new(8)
-
-    # Possible features to select
-    candidates  = observations.inject(Set.new){|s,o| s.merge(o.keys) }.entries
-    candidates -= [label]
 
     count.times do
       pool.enqueue do |n|
         $stderr.puts "Starting #{n}"
 
-        # Select a random subset of features from a random bootstrap sample of observations
-        features = candidates.sample_without_replacement(width) | [label]
-        selected = observations.sample_with_replacement(observations.size).map{|o| o.slice(features) }
-
-        yield selected
+        # Select a random subset of observations (bootstrap sample)
+        yield observations.sample_with_replacement(observations.size)
       end
     end
 

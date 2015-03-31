@@ -20,19 +20,19 @@ require_relative "combine"
 # - median: TODO
 
 module CART
-  def self.regression(label, observations, depth = -1)
-    train(:variance, label, observations, depth)
+  def self.regression(label, observations, depth = -1, features = -1)
+    train(:variance, :mean, label, observations, depth)
   end
 
-  def self.classify(label, observations, depth = -1)
-    train(:entropy, label, observations, depth)
+  def self.classify(label, observations, depth = -1, features = -1)
+    train(:entropy, :mode, label, observations, depth)
   end
 
-  def self.train(measure, label, observations, depth = -1)
+  def self.train(measure, method, label, observations, depth = -1, features = -1)
     score = send(measure, observations.map{|o| o[label] })
     count = observations.size.to_f
 
-    return Leaf.new(score, observations.map{|o| o[label] }) if depth.zero?
+    return Leaf.new(score, method, observations.map{|o| o[label] }) if depth.zero?
 
     # Build set of unique values (and comparison operator) per column
     attrs = observations.inject({}) do |sum, o|
@@ -45,6 +45,9 @@ module CART
 
     # Remember the best gain, feature, test op, threshold, and t/f partitions
     best = [0, nil, nil, nil, [], []]
+
+    # Use all the features when `features < 0`, otherwise sample a subset of them
+    attrs = attrs.sample_without_replacement(features) unless features < 0
 
     # Compute the gain from partitioning observations by each feature/threshold pair
     attrs.each do |feature, (values, op)|
@@ -64,11 +67,11 @@ module CART
     gain, feature, op, threshold, ts, fs = best
 
     if gain <= 0
-      Leaf.new(score, observations.map{|o| o[label] })
+      Leaf.new(score, method, observations.map{|o| o[label] })
     else
-      Node.new(feature, op, threshold,
-        CART.train(measure, label, ts, depth - 1),
-        CART.train(measure, label, fs, depth - 1))
+      Node.new(method, feature, op, threshold,
+        CART.train(measure, method, label, ts, depth - 1),
+        CART.train(measure, method, label, fs, depth - 1))
     end
   end
 
@@ -110,14 +113,14 @@ end
 class Node
   attr_reader :t, :f
 
-  def initialize(feature, op, threshold, t, f)
-    @feature, @op, @threshold, @t, @f =
-      feature, op, threshold, t, f
+  def initialize(method, feature, op, threshold, t, f)
+    @method, @feature, @op, @threshold, @t, @f =
+      method, feature, op, threshold, t, f
   end
 
   # Predict the label for a given observation. Combine multiple labels in
   # a leaf using `method` (one of :mean, :median, :mode, or :identity)
-  def predict(observation, method = :identity)
+  def predict(observation, method = @method)
     observation[@feature].send(@op, @threshold) ?
       @t.predict(observation, method) :
       @f.predict(observation, method)
@@ -161,13 +164,14 @@ end
 class Leaf
   attr_reader :score, :labels
 
-  def initialize(score, labels)
-    @score, @labels = score, labels
+  def initialize(score, method, labels)
+    @score, @method, @labels =
+      score, method, labels
   end
 
   # Predict the label for a given observation. Combine multiple labels in
   # a leaf using `method` (one of :mean, :median, :mode, or :identity)
-  def predict(observation, method = :identity)
+  def predict(observation, method = @method)
     Combine.send(method, @labels)
   end
 
@@ -186,3 +190,19 @@ class Leaf
     @labels.inspect
   end
 end
+
+$data = [
+  {day:1,  weather:"sun", temp:"H", humidity:85, wind:"L", play:false},
+  {day:2,  weather:"sun", temp:"H", humidity:90, wind:"H", play:false},
+  {day:3,  weather:"cld", temp:"H", humidity:78, wind:"L", play:true},
+  {day:4,  weather:"wet", temp:"+", humidity:96, wind:"L", play:true},
+  {day:5,  weather:"wet", temp:"C", humidity:80, wind:"L", play:true},
+  {day:6,  weather:"wet", temp:"C", humidity:70, wind:"H", play:false},
+  {day:7,  weather:"cld", temp:"C", humidity:65, wind:"H", play:true},
+  {day:8,  weather:"sun", temp:"+", humidity:95, wind:"L", play:false},
+  {day:9,  weather:"sun", temp:"C", humidity:70, wind:"L", play:true},
+  {day:10, weather:"wet", temp:"+", humidity:80, wind:"L", play:true},
+  {day:11, weather:"sun", temp:"+", humidity:70, wind:"H", play:true},
+  {day:12, weather:"cld", temp:"+", humidity:90, wind:"H", play:true},
+  {day:13, weather:"cld", temp:"H", humidity:75, wind:"L", play:true},
+  {day:14, weather:"wet", temp:"+", humidity:80, wind:"H", play:false}]
