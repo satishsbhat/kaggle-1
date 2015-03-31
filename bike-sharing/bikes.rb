@@ -5,6 +5,7 @@ require "time"
 require_relative "cart"
 require_relative "patch"
 require_relative "bagging"
+require_relative "boosting"
 
 def csv(io)
   names = nil
@@ -91,11 +92,17 @@ def train(observations)
     rescue
       $stderr.puts "Training model for 'registered'"
 
-      Bagging.bootstrap(150, 15, :registered, observations) do |sample|
-        CART.regression(:registered, sample.map{|x| x.except([:unregistered, :total]) })
-      end.tap do |forest|
-        File.open("registered.t", "w"){|io| io.write(Marshal.dump(forest)) }
+      Bagging.bootstrap(150, :registered, observations.map{|x| x.except([:unregistered, :total]) }) do |sample|
+        CART.regression(:registered, sample, -1, 10)
+      end.tap do |ensemble|
+        File.open("registered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
       end
+
+      # Boosting.stochastic(50, 0.65, :registered, observations.map{|x| x.except([:unregistered, :total]) }) do |sample|
+      #   CART.regression(:registered, sample, 3)
+      # end.tap do |ensemble|
+      #   File.open("registered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
+      # end
     end
 
   unregistered =
@@ -104,11 +111,17 @@ def train(observations)
     rescue
       $stderr.puts "Training model for 'unregistered'"
 
-      Bagging.bootstrap(150, 15, :unregistered, observations) do |sample|
-        CART.regression(:unregistered, sample.map{|x| x.except([:registered, :total]) })
-      end.tap do |forest|
-        File.open("unregistered.t", "w"){|io| io.write(Marshal.dump(forest)) }
+      Bagging.bootstrap(150, :unregistered, observations.map{|x| x.except([:registered, :total]) }) do |sample|
+        CART.regression(:unregistered, sample, -1, 10)
+      end.tap do |ensemble|
+        File.open("unregistered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
       end
+
+      # Boosting.stochastic(50, 0.65, :unregistered, observations.map{|x| x.except([:registered, :total]) }) do |sample|
+      #   CART.regression(:unregistered, sample, 3)
+      # end.tap do |ensemble|
+      #   File.open("unregistered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
+      # end
     end
 
   [registered, unregistered]
@@ -120,13 +133,13 @@ def predict(registered, unregistered, io)
 
   csv(io) do |x|
     y = features(x)
-    puts "%s,%d" % [x["datetime"], registered.predict(y, :mean) + unregistered.predict(y, :mean)]
+    puts "%s,%d" % [x["datetime"], registered.predict(y) + unregistered.predict(y)]
   end
 end
 
 # Compute the error of a single prediction
 def error(actual, predicted)
-  (Math.log(1 + predicted.to_i) - Math.log(1 + actual.to_i)) ** 2
+  (Math.log(1 + predicted.abs.to_i) - Math.log(1 + actual.to_i)) ** 2
 end
 
 # Evaluate error (using whole data set)
@@ -141,7 +154,7 @@ def evaluate(registered, unregistered, io)
     next if y[:dom_n] <= 19
   
     count += 1
-    total += error(y[:total], registered.predict(y, :mean) + unregistered.predict(y, :mean))
+    total += error(y[:total], registered.predict(y) + unregistered.predict(y))
   end
   
   $stderr.puts "error:  #{Math.sqrt(total / count)}"
@@ -153,6 +166,6 @@ if __FILE__ == $0
 
   registered, unregistered = train(observations)
 
-  File.open("data/test.csv"){|io| predict(registered, unregistered, io)  }
+# File.open("data/test.csv"){|io| predict(registered, unregistered, io)  }
   File.open("data/hour.csv"){|io| evaluate(registered, unregistered, io) }
 end
