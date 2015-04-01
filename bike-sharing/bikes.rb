@@ -93,7 +93,7 @@ def train(observations)
       $stderr.puts "Training model for 'registered'"
 
       Bagging.bootstrap(150, :registered, observations.map{|x| x.except([:unregistered, :total]) }) do |sample|
-        CART.regression(:registered, sample, -1, 10)
+        CART.regression(:registered, sample, -1, 8)
       end.tap do |ensemble|
         File.open("registered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
       end
@@ -112,7 +112,7 @@ def train(observations)
       $stderr.puts "Training model for 'unregistered'"
 
       Bagging.bootstrap(150, :unregistered, observations.map{|x| x.except([:registered, :total]) }) do |sample|
-        CART.regression(:unregistered, sample, -1, 10)
+        CART.regression(:unregistered, sample, -1, 8)
       end.tap do |ensemble|
         File.open("unregistered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
       end
@@ -133,7 +133,7 @@ def predict(registered, unregistered, io)
 
   csv(io) do |x|
     y = features(x)
-    puts "%s,%d" % [x["datetime"], registered.predict(y) + unregistered.predict(y)]
+    puts "%s,%d" % [x["datetime"], registered.predict(y, :mean) + unregistered.predict(y, :mean)]
   end
 end
 
@@ -154,7 +154,7 @@ def evaluate(registered, unregistered, io)
     next if y[:dom_n] <= 19
   
     count += 1
-    total += error(y[:total], registered.predict(y) + unregistered.predict(y))
+    total += error(y[:total], registered.predict(y, :mean) + unregistered.predict(y, :mean))
   end
   
   $stderr.puts "error:  #{Math.sqrt(total / count)}"
@@ -166,6 +166,6 @@ if __FILE__ == $0
 
   registered, unregistered = train(observations)
 
-# File.open("data/test.csv"){|io| predict(registered, unregistered, io)  }
+  File.open("data/test.csv"){|io| predict(registered, unregistered, io)  }
   File.open("data/hour.csv"){|io| evaluate(registered, unregistered, io) }
 end
