@@ -43,7 +43,7 @@ def time_features(time)
     year_dow:       [time.year, time.wday].join("-"),             # 14 = 2 * 14
     year_hod:       [time.year, time.hour].join("-"),             # 48 = 2 * 24
   # year_mon_hod_a: [time.year, time.month, time.hour].join("-"), # 576 = 2 * 12 * 24
-    year_mon_dow_a: [time.year, time.month, time.wday].join("-")  # 168 = 2 * 12 * 7
+    year_mon_dow_a: [time.year, time.month, time.wday].join("-")  # 168 = 2 * 12 * 7,
   }
 end
 
@@ -59,6 +59,10 @@ def features(x)
     feels_like:   x["atemp"].to_i,                                     # continuous
     humidity:     x["humidity"].to_i,                                  # continuous
     wind:         x["windspeed"].to_i,                                 # continuous
+    sin_month:    3*Math.sin((time.month-1)/2.0 * Math::PI/12 - Math::PI/8.0),
+    work_sin_hr:  x["workingday"] == "0" ? -Math.sin(time.hour * (Math::PI/12) + Math::PI/4) : 0,
+    unwrk_sin_hr: x["workingday"] == "1" ? 2*Math.sin(time.hour * (Math::PI/12) + Math::PI/4)
+                                         + 3*Math.sin(2 * time.hour * (Math::PI/12) + Math::PI*3/4) : 0,
 
     unregistered: x["casual"].to_i,                                    # label
     registered:   x["registered"].to_i,                                # label
@@ -93,7 +97,7 @@ def train(observations)
       $stderr.puts "Training model for 'registered'"
 
       Bagging.bootstrap(150, :registered, observations.map{|x| x.except([:unregistered, :total]) }) do |sample|
-        CART.regression(:registered, sample, -1, 8)
+        CART.regression(:registered, sample, -1, 5)
       end.tap do |ensemble|
         File.open("registered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
       end
@@ -112,7 +116,7 @@ def train(observations)
       $stderr.puts "Training model for 'unregistered'"
 
       Bagging.bootstrap(150, :unregistered, observations.map{|x| x.except([:registered, :total]) }) do |sample|
-        CART.regression(:unregistered, sample, -1, 8)
+        CART.regression(:unregistered, sample, -1, 5)
       end.tap do |ensemble|
         File.open("unregistered.t", "w"){|io| io.write(Marshal.dump(ensemble)) }
       end
